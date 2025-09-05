@@ -113,8 +113,8 @@ async def assess_reactive_automation():
             listener = asyncio.create_task(
                 wait_for_event(
                     listening,
-                    "prefect-cloud.automation.triggered",
-                    f"prefect-cloud.automation.{automation['id']}",
+                    "prefect.automation.triggered",
+                    f"prefect.automation.{automation['id']}",
                 )
             )
             await listening.wait()
@@ -171,8 +171,8 @@ async def assess_proactive_automation():
             listener = asyncio.create_task(
                 wait_for_event(
                     listening,
-                    "prefect-cloud.automation.triggered",
-                    f"prefect-cloud.automation.{automation['id']}",
+                    "prefect.automation.triggered",
+                    f"prefect.automation.{automation['id']}",
                 )
             )
             await listening.wait()
@@ -240,8 +240,8 @@ async def assess_compound_automation():
             listener = asyncio.create_task(
                 wait_for_event(
                     listening,
-                    "prefect-cloud.automation.triggered",
-                    f"prefect-cloud.automation.{automation['id']}",
+                    "prefect.automation.triggered",
+                    f"prefect.automation.{automation['id']}",
                 )
             )
             await listening.wait()
@@ -312,8 +312,8 @@ async def assess_sequence_automation():
             listener = asyncio.create_task(
                 wait_for_event(
                     listening,
-                    "prefect-cloud.automation.triggered",
-                    f"prefect-cloud.automation.{automation['id']}",
+                    "prefect.automation.triggered",
+                    f"prefect.automation.{automation['id']}",
                 )
             )
             await listening.wait()
