@@ -1,0 +1,9 @@
+[project]
+name = "canary-flows"
+version = "0.1.0"
+description = "Test flows running against bleeding-edge Prefect"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "prefect>=3.4.16",
+]

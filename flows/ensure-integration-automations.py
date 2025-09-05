@@ -26,7 +26,7 @@ async def create_or_replace_automation(automation: dict[str, Any]):
 
 @flow
 async def ensure_integrations_automations():
-    NOTIFICATION_BLOCK = "237c3f19e-8c2d-48db-9783-68ea848bfa4f"
+    NOTIFICATION_BLOCK = "70930127-7ed8-4b3f-ba20-4bf339fb9b42"
 
     await create_or_replace_automation(
         {
