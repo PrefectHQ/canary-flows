@@ -155,13 +155,12 @@ async def create_test_deployment_context(
             concurrency_options=ConcurrencyOptions(
                 collision_strategy=collision_strategy,
             ),
-            work_pool_name="kubernetes-prd-internal-tools",
+            work_pool_name="integration-tests",
             pull_steps=[
                 {
                     "prefect.deployments.steps.git_clone": {
-                        "repository": "https://github.com/PrefectHQ/integration-tests",
+                        "repository": "https://github.com/PrefectHQ/canary-flows",
                         "branch": "main",
-                        "access_token": "{{ prefect.blocks.secret.integration-tests-contents-ro-pat }}"
                     }
                 }
             ],
