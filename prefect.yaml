@@ -81,7 +81,6 @@ deployments:
   - name: Deployment Concurrency - Prefect 3.4.10
     tags:
       - expected:success
-      - all
     description: *description
     schedule: *every_five_minutes
     entrypoint: flows/deployment-concurrency.py:deployment_concurrency_entry

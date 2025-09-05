@@ -50,7 +50,6 @@ To add a new integration test flow:
 4. **Choose appropriate tags**:
    - `expected:success` - Flow should complete successfully
    - `expected:failure` - Flow is expected to fail (for testing error handling)
-   - `all` - Include in comprehensive test suites
 
 5. **Select scheduling**:
    - `*every_five_minutes` - Standard integration test frequency
