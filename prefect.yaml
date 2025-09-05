@@ -1,0 +1,189 @@
+pull:
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/PrefectHQ/canary-flows
+      branch: main
+
+definitions:
+  descriptions:
+    integration_tests: &description |
+      Runs a test flow to test integration with our API
+
+  schedules:
+    every_five_minutes: &every_five_minutes
+      cron: "*/5 * * * *"
+
+    every_three_hours: &every_three_hours
+      cron: "0 */3 * * *"
+
+  work_pools:
+    integration-tests: &integration-tests-work-pool
+      name: integration-tests
+
+deployments:
+  # All deployments with environment tags for conditional deployment - alphabetical order
+  - name: Automations - Compound
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/automation-assessments.py:assess_compound_automation
+    work_pool: *integration-tests-work-pool
+
+  - name: Automations - Proactive
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/automation-assessments.py:assess_proactive_automation
+    work_pool: *integration-tests-work-pool
+
+  - name: Automations - Reactive
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/automation-assessments.py:assess_reactive_automation
+    work_pool: *integration-tests-work-pool
+
+  - name: Automations - Sequence
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/automation-assessments.py:assess_sequence_automation
+    work_pool: *integration-tests-work-pool
+
+  - name: Automations Tracer
+    tags:
+      - expected:success
+    description: *description
+    schedule:
+      interval: 30
+    entrypoint: flows/automations-tracer.py:automations_tracer_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Deployment Concurrency Leases
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/deployment-concurrency-leases.py:deployment_concurrency_leases_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Deployment Concurrency
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/deployment-concurrency.py:deployment_concurrency_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Deployment Concurrency - Prefect 3.4.10
+    tags:
+      - expected:success
+      - all
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/deployment-concurrency.py:deployment_concurrency_entry
+    work_pool:
+      <<: *integration-tests-work-pool
+      job_variables:
+        image: prefecthq/prefect:3.4.10-python3.12
+        env:
+          PREFECT_VERSION: 3.4.10
+
+  - name: Events - Streaming
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/event-streaming.py:event_streaming
+    work_pool: *integration-tests-work-pool
+
+  - name: Flow Pauses
+    tags:
+      - expected:failure
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/flow-pauses.py:flow_pauses_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Flow Results
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/flow-results.py:flow_results_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Flow Retries
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/flow-retries.py:flow_retries_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Flow Retries With Subflows
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/flow-retries-with-subflows.py:flow_retries_subflows_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Hello Tasks
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/hello-tasks.py:hello_tasks_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Hello World
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/hello-world.py:hello_world_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Ensure Automations Exist
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_three_hours
+    entrypoint: flows/ensure-integration-automations.py:ensure_integrations_automations
+    work_pool: *integration-tests-work-pool
+
+  - name: Secret Block
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/secret-block.py:secret_block_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Task Burst
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/task-bursts.py:burst_tasks
+    work_pool: *integration-tests-work-pool
+
+  - name: Task Results
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/task-results.py:task_results_entry
+    work_pool: *integration-tests-work-pool
+
+  - name: Task Retries
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/task-retries.py:task_retries_entry
+    work_pool: *integration-tests-work-pool
