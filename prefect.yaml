@@ -163,6 +163,14 @@ deployments:
     entrypoint: flows/secret-block.py:secret_block_entry
     work_pool: *integration-tests-work-pool
 
+  - name: Tag-based Concurrency Limits
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_five_minutes
+    entrypoint: flows/tag-based-concurrency-limits.py:tag_based_concurrency_limits_entry
+    work_pool: *integration-tests-work-pool
+
   - name: Task Burst
     tags:
       - expected:success
