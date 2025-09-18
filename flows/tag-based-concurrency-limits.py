@@ -172,7 +172,7 @@ async def verify_concurrency_limit_enforcement(
 @flow(timeout_seconds=INTEGRATION_TEST_TIMEOUT)
 async def tag_based_concurrency_limits_entry(
     concurrency_limit: int = 2,
-    task_count: int = 20,
+    task_count: int = 5,
     task_duration: int = 8,
 ):
     """

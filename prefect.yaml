@@ -184,11 +184,11 @@ deployments:
     schedule: *every_five_minutes
     entrypoint: flows/tag-based-concurrency-limits.py:tag_based_concurrency_limits_entry
     work_pool:
-      name: *integration-tests-work-pool
+      <<: *integration-tests-work-pool
       job_variables:
         image: prefecthq/prefect:2.20-python3.12
         env:
-          PREFECT_VERSION: 2.20
+          PREFECT_VERSION: "2.20"
 
   - name: Task Burst
     tags:
