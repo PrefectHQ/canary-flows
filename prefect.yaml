@@ -166,10 +166,29 @@ deployments:
   - name: Tag-based Concurrency Limits
     tags:
       - expected:success
-    description: *description
+    description: |
+      This test runs a flow using tag-based concurrency limits to guard 
+      against regressions during the transition to using GCLs for concurrency limits. 
     schedule: *every_five_minutes
     entrypoint: flows/tag-based-concurrency-limits.py:tag_based_concurrency_limits_entry
     work_pool: *integration-tests-work-pool
+
+  - name: Tag-based Concurrency Limits - Prefect 2.20
+    tags:
+      - expected:success
+    description: |
+      This test runs a flow using tag-based concurrency limits with Prefect 2.20 to guard 
+      against regressions during the transition to using GCLs for concurrency limits. 
+      Prefect 2 handles tag-based concurrency limits server-side via orchestration rules, 
+      which is why this is separate from the base tag-based concurrency limits test.
+    schedule: *every_five_minutes
+    entrypoint: flows/tag-based-concurrency-limits.py:tag_based_concurrency_limits_entry
+    work_pool:
+      name: *integration-tests-work-pool
+      job_variables:
+        image: prefecthq/prefect:2.20-python3.12
+        env:
+          PREFECT_VERSION: 2.20
 
   - name: Task Burst
     tags:

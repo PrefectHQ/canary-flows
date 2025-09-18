@@ -9,13 +9,13 @@ This runs every 5 minutes to provide early warning of concurrency limit issues.
 """
 
 import asyncio
+import inspect
 import os
 import time
 import uuid
 from typing import List
 
 from prefect import flow, get_client, get_run_logger, task
-from prefect.futures import wait
 
 # Integration test timeout - must complete before next run (5 minutes)
 INTEGRATION_TEST_TIMEOUT = 4 * 60  # 4 minutes
@@ -117,12 +117,17 @@ async def verify_concurrency_limit_enforcement(
             logger.info(f"Submitting {task_count} tasks with tag '{test_tag}'")
             task_futures = []
             for i in range(task_count):
-                future = concurrency_limited_task.with_options(tags=[test_tag]).submit(i, task_duration, test_tag)
+                future = concurrency_limited_task.with_options(tags=["foo", test_tag]).submit(i, task_duration, test_tag)
+                if inspect.isawaitable(future):
+                    future = await future
                 task_futures.append(future)
                 await asyncio.sleep(0.5)  # Small delay between submissions
 
             # Wait for all tasks to complete
-            wait(task_futures)
+            for future in task_futures:
+                maybe_coro = future.wait()
+                if inspect.isawaitable(maybe_coro):
+                    await maybe_coro
             logger.info(f"All {len(task_futures)} tasks completed")
 
             # Get the slot monitoring results
@@ -167,7 +172,7 @@ async def verify_concurrency_limit_enforcement(
 @flow(timeout_seconds=INTEGRATION_TEST_TIMEOUT)
 async def tag_based_concurrency_limits_entry(
     concurrency_limit: int = 2,
-    task_count: int = 5,
+    task_count: int = 20,
     task_duration: int = 8,
 ):
     """
