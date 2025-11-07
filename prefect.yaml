@@ -213,3 +213,28 @@ deployments:
     schedule: *every_five_minutes
     entrypoint: flows/task-retries.py:task_retries_entry
     work_pool: *integration-tests-work-pool
+
+  - name: Database Cleanup
+    tags:
+      - maintenance
+      - expected:success
+    description: |
+      Cleans up old flow runs from the testbed database to manage disk space.
+
+      By default runs in DRY RUN mode - no actual deletions occur unless
+      explicitly configured via parameters when triggering the flow.
+
+      Configurable via UI form with validation:
+      - Retention period (1-365 days, default: 30)
+      - Entity types to clean (flow_runs)
+      - Terminal states to include (COMPLETED, FAILED, CANCELLED, CRASHED)
+      - Batch size (10-1000, default: 100)
+      - Rate limiting delay (0-10s, default: 0.5s)
+      - Dry run mode (default: true)
+    schedule: *every_three_hours
+    entrypoint: flows/database-cleanup.py:database_cleanup_entry
+    work_pool: *integration-tests-work-pool
+    parameters:
+      config:
+        days_to_keep: 60
+        dry_run: true
