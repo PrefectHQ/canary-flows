@@ -16,9 +16,8 @@ from prefect.client.schemas.filters import (
     FlowRunFilter,
     FlowRunFilterStartTime,
     FlowRunFilterState,
-    FlowRunFilterStateType,
+    FlowRunFilterStateName,
 )
-from prefect.client.schemas.objects import StateType
 from pydantic import BaseModel, Field
 
 
@@ -49,9 +48,9 @@ class RetentionConfig(BaseModel):
         json_schema_extra={"position": 1},
     )
 
-    states_to_clean: list[Literal["COMPLETED", "FAILED", "CANCELLED", "CRASHED"]] = (
+    states_to_clean: list[Literal["Completed", "Failed", "Cancelled", "Crashed"]] = (
         Field(
-            default=["COMPLETED", "FAILED", "CANCELLED"],
+            default=["Completed", "Failed", "Cancelled"],
             description="Which terminal states to include in cleanup",
             json_schema_extra={"position": 2},
         )
@@ -98,14 +97,11 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
     logger.info(f"Dry run: {config.dry_run}")
 
     async with get_client() as client:
-        # Convert state strings to StateType enum
-        state_types = [StateType(state) for state in config.states_to_clean]
-
-        # Create filter for old completed flow runs
+        # Create filter for old completed flow runs using state names
         flow_run_filter = FlowRunFilter(
             start_time=FlowRunFilterStartTime(before_=cutoff),
             state=FlowRunFilterState(
-                type=FlowRunFilterStateType(any_=state_types)
+                name=FlowRunFilterStateName(any_=config.states_to_clean)
             ),
         )
 
@@ -139,32 +135,38 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
                 logger.info(f"  ... and {len(flow_runs) - 5} more in this batch")
             return {"deleted": 0, "failed": 0, "total_found": total_count, "dry_run": True}
 
-        # Actual deletion logic
+        # Actual deletion logic - use concurrent deletes with gather
         deleted_total = 0
         failed_total = 0
 
         while flow_runs:
-            batch_deleted = 0
-            batch_failed = 0
+            batch_size = len(flow_runs)
             failed_deletes = []
 
-            for flow_run in flow_runs:
+            # Delete all flow runs in this batch concurrently
+            async def delete_with_error_handling(flow_run_id):
                 try:
-                    await client.delete_flow_run(flow_run.id)
-                    deleted_total += 1
-                    batch_deleted += 1
+                    await client.delete_flow_run(flow_run_id)
+                    return flow_run_id, None
                 except Exception as e:
-                    logger.warning(f"Failed to delete flow run {flow_run.id}: {e}")
-                    failed_deletes.append((flow_run.id, str(e)))
+                    return flow_run_id, str(e)
+
+            results = await asyncio.gather(
+                *[delete_with_error_handling(fr.id) for fr in flow_runs],
+                return_exceptions=False,
+            )
+
+            # Process results
+            for flow_run_id, error in results:
+                if error:
+                    failed_deletes.append((flow_run_id, error))
                     failed_total += 1
-                    batch_failed += 1
+                else:
+                    deleted_total += 1
 
-                # Rate limiting
-                if batch_deleted % 10 == 0 and config.rate_limit_delay > 0:
-                    await asyncio.sleep(config.rate_limit_delay)
-
+            batch_deleted = batch_size - len(failed_deletes)
             logger.info(
-                f"Batch complete: deleted {batch_deleted}/{len(flow_runs)} "
+                f"Batch complete: deleted {batch_deleted}/{batch_size} "
                 f"(total: {deleted_total}, failed: {failed_total})"
             )
 
@@ -173,14 +175,14 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
                 for flow_run_id, error in failed_deletes[:3]:
                     logger.warning(f"  - {flow_run_id}: {error}")
 
+            # Rate limiting delay between batches
+            if config.rate_limit_delay > 0:
+                await asyncio.sleep(config.rate_limit_delay)
+
             # Get next batch
             flow_runs = await client.read_flow_runs(
                 flow_run_filter=flow_run_filter, limit=config.batch_size
             )
-
-            # Delay between batches
-            if flow_runs and config.rate_limit_delay > 0:
-                await asyncio.sleep(1.0)
 
         logger.info(
             f"Cleanup complete. Deleted: {deleted_total}, Failed: {failed_total}"

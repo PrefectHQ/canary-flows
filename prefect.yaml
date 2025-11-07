@@ -237,4 +237,3 @@ deployments:
     parameters:
       config:
         days_to_keep: 60
-        dry_run: true
