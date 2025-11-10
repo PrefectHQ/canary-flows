@@ -4,6 +4,9 @@ Database cleanup flow for the OSS testbed.
 This flow provides flexible cleanup capabilities for old flow runs, logs, and artifacts
 using configurable retention policies. It uses Pydantic models to create a user-friendly
 form in the Prefect UI with validation.
+
+The flow uses task-based parallelism to process multiple batches concurrently for
+improved performance.
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -64,11 +67,11 @@ class RetentionConfig(BaseModel):
         json_schema_extra={"position": 3},
     )
 
-    rate_limit_delay: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=10.0,
-        description="Delay in seconds between API calls for rate limiting (0-10s)",
+    max_concurrent_batches: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Maximum number of batches to process concurrently (1-20)",
         json_schema_extra={"position": 4},
     )
 
@@ -80,8 +83,89 @@ class RetentionConfig(BaseModel):
 
 
 @task
+async def delete_batch(
+    flow_run_filter: FlowRunFilter,
+    batch_size: int,
+    batch_number: int,
+    dry_run: bool = True,
+) -> dict[str, int]:
+    """Delete a single batch of flow runs.
+
+    This task handles fetching and deleting one batch of flow runs concurrently.
+
+    Args:
+        flow_run_filter: Filter to select flow runs for deletion
+        batch_size: Number of flow runs to fetch and delete
+        batch_number: Batch number for logging
+        dry_run: If True, skip actual deletion
+
+    Returns:
+        Statistics about this batch: deleted, failed, fetched counts
+    """
+    logger = get_run_logger()
+
+    async with get_client() as client:
+        # Fetch this batch
+        flow_runs = await client.read_flow_runs(
+            flow_run_filter=flow_run_filter, limit=batch_size
+        )
+
+        if not flow_runs:
+            logger.info(f"Batch {batch_number}: No flow runs found")
+            return {"deleted": 0, "failed": 0, "fetched": 0}
+
+        fetched_count = len(flow_runs)
+        logger.info(f"Batch {batch_number}: Fetched {fetched_count} flow runs")
+
+        if dry_run:
+            logger.info(f"Batch {batch_number}: DRY RUN - skipping deletion")
+            return {"deleted": 0, "failed": 0, "fetched": fetched_count, "dry_run": True}
+
+        # Delete all flow runs in this batch concurrently
+        async def delete_with_error_handling(flow_run_id):
+            try:
+                await client.delete_flow_run(flow_run_id)
+                return flow_run_id, None
+            except Exception as e:
+                return flow_run_id, str(e)
+
+        results = await asyncio.gather(
+            *[delete_with_error_handling(fr.id) for fr in flow_runs],
+            return_exceptions=False,
+        )
+
+        # Process results
+        deleted_count = 0
+        failed_count = 0
+        failed_deletes = []
+
+        for flow_run_id, error in results:
+            if error:
+                failed_deletes.append((flow_run_id, error))
+                failed_count += 1
+            else:
+                deleted_count += 1
+
+        logger.info(
+            f"Batch {batch_number}: Deleted {deleted_count}/{fetched_count}, "
+            f"Failed: {failed_count}"
+        )
+
+        if failed_deletes:
+            logger.warning(
+                f"Batch {batch_number}: Failed to delete {len(failed_deletes)} flow runs"
+            )
+            for flow_run_id, error in failed_deletes[:3]:
+                logger.warning(f"  - {flow_run_id}: {error}")
+
+        return {"deleted": deleted_count, "failed": failed_count, "fetched": fetched_count}
+
+
+@task
 async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
     """Delete flow runs older than the configured retention period.
+
+    This task coordinates multiple batch deletion tasks running concurrently.
 
     Args:
         config: Configuration for the cleanup operation
@@ -95,99 +179,96 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
     logger.info(f"Cleaning flow runs older than {cutoff} ({config.days_to_keep} days)")
     logger.info(f"States to clean: {config.states_to_clean}")
     logger.info(f"Dry run: {config.dry_run}")
+    logger.info(f"Max concurrent batches: {config.max_concurrent_batches}")
 
+    # Create filter for old flow runs
+    flow_run_filter = FlowRunFilter(
+        start_time=FlowRunFilterStartTime(before_=cutoff),
+        state=FlowRunFilterState(
+            name=FlowRunFilterStateName(any_=config.states_to_clean)
+        ),
+    )
+
+    # Quick preview to see if there's anything to delete
     async with get_client() as client:
-        # Create filter for old completed flow runs using state names
-        flow_run_filter = FlowRunFilter(
-            start_time=FlowRunFilterStartTime(before_=cutoff),
-            state=FlowRunFilterState(
-                name=FlowRunFilterStateName(any_=config.states_to_clean)
-            ),
-        )
-
-        # Get initial batch to count and preview
-        flow_runs = await client.read_flow_runs(
+        preview = await client.read_flow_runs(
             flow_run_filter=flow_run_filter, limit=config.batch_size
         )
 
-        if not flow_runs:
+        if not preview:
             logger.info("No flow runs found matching criteria")
             return {"deleted": 0, "failed": 0, "total_found": 0}
 
-        # Get total count for preview
-        total_count = len(flow_runs)
-        if len(flow_runs) == config.batch_size:
-            # There might be more, estimate
-            logger.info(f"Found at least {total_count} flow runs to clean (may be more)")
-        else:
-            logger.info(f"Found {total_count} flow runs to clean")
+        logger.info(f"Found at least {len(preview)} flow runs to process")
 
         if config.dry_run:
             logger.info("DRY RUN MODE - No actual deletions will occur")
-            logger.info(f"Would delete up to {total_count} flow runs")
-            # Show sample of what would be deleted
-            for i, fr in enumerate(flow_runs[:5]):
+            logger.info(f"Preview of first {min(5, len(preview))} flow runs:")
+            for i, fr in enumerate(preview[:5]):
                 logger.info(
-                    f"  Sample {i+1}: {fr.name} ({fr.id}) "
+                    f"  {i+1}. {fr.name} ({fr.id}) "
                     f"from {fr.start_time}, state: {fr.state.name}"
                 )
-            if len(flow_runs) > 5:
-                logger.info(f"  ... and {len(flow_runs) - 5} more in this batch")
-            return {"deleted": 0, "failed": 0, "total_found": total_count, "dry_run": True}
 
-        # Actual deletion logic - use concurrent deletes with gather
-        deleted_total = 0
-        failed_total = 0
+    # Submit batch tasks concurrently
+    # We'll keep submitting batches until we get an empty batch back
+    batch_futures = []
+    batch_number = 0
+    active_batches = 0
+    deleted_total = 0
+    failed_total = 0
+    fetched_total = 0
 
-        while flow_runs:
-            batch_size = len(flow_runs)
-            failed_deletes = []
-
-            # Delete all flow runs in this batch concurrently
-            async def delete_with_error_handling(flow_run_id):
-                try:
-                    await client.delete_flow_run(flow_run_id)
-                    return flow_run_id, None
-                except Exception as e:
-                    return flow_run_id, str(e)
-
-            results = await asyncio.gather(
-                *[delete_with_error_handling(fr.id) for fr in flow_runs],
-                return_exceptions=False,
+    while True:
+        # Submit up to max_concurrent_batches at a time
+        while active_batches < config.max_concurrent_batches:
+            batch_number += 1
+            future = delete_batch.submit(
+                flow_run_filter=flow_run_filter,
+                batch_size=config.batch_size,
+                batch_number=batch_number,
+                dry_run=config.dry_run,
             )
+            batch_futures.append(future)
+            active_batches += 1
 
-            # Process results
-            for flow_run_id, error in results:
-                if error:
-                    failed_deletes.append((flow_run_id, error))
-                    failed_total += 1
-                else:
-                    deleted_total += 1
+        # Wait for at least one batch to complete
+        if batch_futures:
+            # Get result from the oldest batch
+            completed_future = batch_futures.pop(0)
+            result = await completed_future.wait()
+            active_batches -= 1
 
-            batch_deleted = batch_size - len(failed_deletes)
-            logger.info(
-                f"Batch complete: deleted {batch_deleted}/{batch_size} "
-                f"(total: {deleted_total}, failed: {failed_total})"
-            )
+            deleted_total += result["deleted"]
+            failed_total += result["failed"]
+            fetched_total += result["fetched"]
 
-            if failed_deletes:
-                logger.warning(f"Failed to delete {len(failed_deletes)} flow runs in this batch")
-                for flow_run_id, error in failed_deletes[:3]:
-                    logger.warning(f"  - {flow_run_id}: {error}")
+            # If this batch found no flow runs, we're done
+            if result["fetched"] == 0:
+                logger.info("No more flow runs to process, stopping batch submission")
+                break
+        else:
+            # No more batches to submit
+            break
 
-            # Rate limiting delay between batches
-            if config.rate_limit_delay > 0:
-                await asyncio.sleep(config.rate_limit_delay)
+    # Wait for any remaining batches to complete
+    logger.info(f"Waiting for {len(batch_futures)} remaining batches to complete...")
+    for future in batch_futures:
+        result = await future.wait()
+        deleted_total += result["deleted"]
+        failed_total += result["failed"]
+        fetched_total += result["fetched"]
 
-            # Get next batch
-            flow_runs = await client.read_flow_runs(
-                flow_run_filter=flow_run_filter, limit=config.batch_size
-            )
+    logger.info(
+        f"Cleanup complete. Fetched: {fetched_total}, "
+        f"Deleted: {deleted_total}, Failed: {failed_total}"
+    )
 
-        logger.info(
-            f"Cleanup complete. Deleted: {deleted_total}, Failed: {failed_total}"
-        )
-        return {"deleted": deleted_total, "failed": failed_total, "total_found": total_count}
+    return_value = {"deleted": deleted_total, "failed": failed_total, "total_found": fetched_total}
+    if config.dry_run:
+        return_value["dry_run"] = True
+
+    return return_value
 
 
 @flow(name="database-cleanup")
