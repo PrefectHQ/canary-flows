@@ -4,16 +4,13 @@ Database cleanup flow for the OSS testbed.
 This flow provides flexible cleanup capabilities for old flow runs, logs, and artifacts
 using configurable retention policies. It uses Pydantic models to create a user-friendly
 form in the Prefect UI with validation.
-
-The flow uses task-based parallelism to process multiple batches concurrently for
-improved performance.
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Literal
 
-from prefect import flow, get_run_logger, task
+from prefect import flow, get_run_logger
 from prefect.client.orchestration import get_client
 from prefect.client.schemas.filters import (
     FlowRunFilter,
@@ -82,90 +79,8 @@ class RetentionConfig(BaseModel):
     )
 
 
-@task
-async def delete_batch(
-    flow_run_filter: FlowRunFilter,
-    batch_size: int,
-    batch_number: int,
-    dry_run: bool = True,
-) -> dict[str, int]:
-    """Delete a single batch of flow runs.
-
-    This task handles fetching and deleting one batch of flow runs concurrently.
-
-    Args:
-        flow_run_filter: Filter to select flow runs for deletion
-        batch_size: Number of flow runs to fetch and delete
-        batch_number: Batch number for logging
-        dry_run: If True, skip actual deletion
-
-    Returns:
-        Statistics about this batch: deleted, failed, fetched counts
-    """
-    logger = get_run_logger()
-
-    async with get_client() as client:
-        # Fetch this batch
-        flow_runs = await client.read_flow_runs(
-            flow_run_filter=flow_run_filter, limit=batch_size
-        )
-
-        if not flow_runs:
-            logger.info(f"Batch {batch_number}: No flow runs found")
-            return {"deleted": 0, "failed": 0, "fetched": 0}
-
-        fetched_count = len(flow_runs)
-        logger.info(f"Batch {batch_number}: Fetched {fetched_count} flow runs")
-
-        if dry_run:
-            logger.info(f"Batch {batch_number}: DRY RUN - skipping deletion")
-            return {"deleted": 0, "failed": 0, "fetched": fetched_count, "dry_run": True}
-
-        # Delete all flow runs in this batch concurrently
-        async def delete_with_error_handling(flow_run_id):
-            try:
-                await client.delete_flow_run(flow_run_id)
-                return flow_run_id, None
-            except Exception as e:
-                return flow_run_id, str(e)
-
-        results = await asyncio.gather(
-            *[delete_with_error_handling(fr.id) for fr in flow_runs],
-            return_exceptions=False,
-        )
-
-        # Process results
-        deleted_count = 0
-        failed_count = 0
-        failed_deletes = []
-
-        for flow_run_id, error in results:
-            if error:
-                failed_deletes.append((flow_run_id, error))
-                failed_count += 1
-            else:
-                deleted_count += 1
-
-        logger.info(
-            f"Batch {batch_number}: Deleted {deleted_count}/{fetched_count}, "
-            f"Failed: {failed_count}"
-        )
-
-        if failed_deletes:
-            logger.warning(
-                f"Batch {batch_number}: Failed to delete {len(failed_deletes)} flow runs"
-            )
-            for flow_run_id, error in failed_deletes[:3]:
-                logger.warning(f"  - {flow_run_id}: {error}")
-
-        return {"deleted": deleted_count, "failed": failed_count, "fetched": fetched_count}
-
-
-@task
 async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
     """Delete flow runs older than the configured retention period.
-
-    This task coordinates multiple batch deletion tasks running concurrently.
 
     Args:
         config: Configuration for the cleanup operation
@@ -189,8 +104,8 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
         ),
     )
 
-    # Quick preview to see if there's anything to delete
     async with get_client() as client:
+        # Quick preview
         preview = await client.read_flow_runs(
             flow_run_filter=flow_run_filter, limit=config.batch_size
         )
@@ -209,55 +124,63 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
                     f"  {i+1}. {fr.name} ({fr.id}) "
                     f"from {fr.start_time}, state: {fr.state.name}"
                 )
+            return {"deleted": 0, "failed": 0, "total_found": len(preview), "dry_run": True}
 
-    # Submit batch tasks concurrently
-    # We'll keep submitting batches until we get an empty batch back
-    batch_futures = []
-    batch_number = 0
-    active_batches = 0
-    deleted_total = 0
-    failed_total = 0
-    fetched_total = 0
+        # Process batches concurrently using asyncio.Semaphore
+        semaphore = asyncio.Semaphore(config.max_concurrent_batches)
+        deleted_total = 0
+        failed_total = 0
+        fetched_total = 0
 
-    while True:
-        # Submit up to max_concurrent_batches at a time
-        while active_batches < config.max_concurrent_batches:
-            batch_number += 1
-            future = delete_batch.submit(
-                flow_run_filter=flow_run_filter,
-                batch_size=config.batch_size,
-                batch_number=batch_number,
-                dry_run=config.dry_run,
-            )
-            batch_futures.append(future)
-            active_batches += 1
+        async def process_batch(batch_num: int) -> dict[str, int]:
+            """Process a single batch with semaphore control."""
+            async with semaphore:
+                flow_runs = await client.read_flow_runs(
+                    flow_run_filter=flow_run_filter, limit=config.batch_size
+                )
 
-        # Wait for at least one batch to complete
-        if batch_futures:
-            # Get result from the oldest batch
-            completed_future = batch_futures.pop(0)
-            result = await completed_future.wait()
-            active_batches -= 1
+                if not flow_runs:
+                    logger.info(f"Batch {batch_num}: No flow runs found")
+                    return {"deleted": 0, "failed": 0, "fetched": 0}
 
+                fetched = len(flow_runs)
+                logger.info(f"Batch {batch_num}: Fetched {fetched} flow runs")
+
+                # Delete all in this batch concurrently
+                async def delete_one(flow_run_id):
+                    try:
+                        await client.delete_flow_run(flow_run_id)
+                        return True
+                    except Exception as e:
+                        logger.warning(f"Failed to delete {flow_run_id}: {e}")
+                        return False
+
+                results = await asyncio.gather(
+                    *[delete_one(fr.id) for fr in flow_runs]
+                )
+
+                deleted = sum(results)
+                failed = len(results) - deleted
+
+                logger.info(f"Batch {batch_num}: Deleted {deleted}/{fetched}, Failed: {failed}")
+                return {"deleted": deleted, "failed": failed, "fetched": fetched}
+
+        # Submit many batch tasks concurrently - semaphore will control actual concurrency
+        # Submit enough tasks that some will return empty (we stop when we see empty results)
+        max_batches = 1000  # conservative upper bound
+        batch_tasks = [process_batch(i) for i in range(1, max_batches + 1)]
+
+        # Process results as they complete
+        for coro in asyncio.as_completed(batch_tasks):
+            result = await coro
             deleted_total += result["deleted"]
             failed_total += result["failed"]
             fetched_total += result["fetched"]
 
-            # If this batch found no flow runs, we're done
+            # Once we see an empty batch, we can stop waiting for more
             if result["fetched"] == 0:
-                logger.info("No more flow runs to process, stopping batch submission")
+                logger.info("Found empty batch, cleanup complete")
                 break
-        else:
-            # No more batches to submit
-            break
-
-    # Wait for any remaining batches to complete
-    logger.info(f"Waiting for {len(batch_futures)} remaining batches to complete...")
-    for future in batch_futures:
-        result = await future.wait()
-        deleted_total += result["deleted"]
-        failed_total += result["failed"]
-        fetched_total += result["fetched"]
 
     logger.info(
         f"Cleanup complete. Fetched: {fetched_total}, "
