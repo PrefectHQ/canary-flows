@@ -1,0 +1,29 @@
+automations:
+  - name: crash-zombie-flows
+    description: >
+      Marks flow runs as crashed when they stop sending heartbeats.
+      Requires PREFECT_RUNNER_HEARTBEAT_FREQUENCY to be set on workers.
+      [created by canary-flows]
+    enabled: true
+    trigger:
+      type: event
+      posture: Proactive
+      after:
+        - prefect.flow-run.heartbeat
+      expect:
+        - prefect.flow-run.heartbeat
+        - prefect.flow-run.Completed
+        - prefect.flow-run.Failed
+        - prefect.flow-run.Cancelled
+        - prefect.flow-run.Crashed
+      match:
+        prefect.resource.id:
+          - prefect.flow-run.*
+      for_each:
+        - prefect.resource.id
+      threshold: 1
+      within: 90
+    actions:
+      - type: change-flow-run-state
+        state: CRASHED
+        message: Flow run marked as crashed due to missing heartbeats.
