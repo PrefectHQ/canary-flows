@@ -13,6 +13,7 @@ import inspect
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import List
 
 from prefect import flow, get_client, get_run_logger, task
@@ -21,10 +22,19 @@ from prefect import flow, get_client, get_run_logger, task
 INTEGRATION_TEST_TIMEOUT = 4 * 60  # 4 minutes
 TEST_TAG_PREFIX = "test-concurrency-" + os.getenv("PREFECT_VERSION", "main")
 
+# Only delete limits older than this to avoid race conditions with concurrent runs
+CLEANUP_AGE_THRESHOLD_SECONDS = 5 * 60  # 5 minutes (same as schedule interval)
+
 
 async def cleanup_lingering_test_limits():
-    """Clean up any lingering test concurrency limits from prior runs."""
+    """Clean up any lingering test concurrency limits from prior runs.
+
+    Only deletes limits older than CLEANUP_AGE_THRESHOLD_SECONDS to avoid
+    race conditions where concurrent test runs delete each other's limits.
+    """
     logger = get_run_logger()
+    now = datetime.now(timezone.utc)
+
     async with get_client() as client:
         try:
             # Read all concurrency limits
@@ -32,6 +42,15 @@ async def cleanup_lingering_test_limits():
 
             for limit in limits:
                 if limit.tag.startswith(TEST_TAG_PREFIX):
+                    # Only delete if older than threshold to avoid race conditions
+                    if limit.created is not None:
+                        age_seconds = (now - limit.created).total_seconds()
+                        if age_seconds < CLEANUP_AGE_THRESHOLD_SECONDS:
+                            logger.debug(
+                                f"Skipping cleanup of {limit.tag} - only {age_seconds:.0f}s old"
+                            )
+                            continue
+
                     await client.delete_concurrency_limit_by_tag(limit.tag)
                     logger.info(f"✅ Pre-test cleanup deleted lingering limit: {limit.tag}")
 
