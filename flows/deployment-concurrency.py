@@ -13,6 +13,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import List
 from uuid import UUID
 
@@ -28,9 +29,18 @@ from prefect.client.schemas.objects import (
 INTEGRATION_TEST_TIMEOUT = 4 * 60  # 4 minutes
 TEST_DEPLOYMENT_PREFIX = "test-deploy-concurrency-" + os.getenv("PREFECT_VERSION", "main")
 
+# Only delete deployments older than this to avoid race conditions with concurrent runs
+CLEANUP_AGE_THRESHOLD_SECONDS = 5 * 60  # 5 minutes (same as schedule interval)
+
 async def sweep_up_lingering_test_deployments():
-    """Sweep up lingering test deployments, in case contextmanager didn't clean up."""
+    """Sweep up lingering test deployments from prior runs.
+
+    Only deletes deployments older than CLEANUP_AGE_THRESHOLD_SECONDS to avoid
+    race conditions where concurrent test runs delete each other's deployments.
+    """
     logger = get_run_logger()
+    now = datetime.now(timezone.utc)
+
     async with get_client() as client:
         try:
             deployments = await client.read_deployments(
@@ -46,6 +56,15 @@ async def sweep_up_lingering_test_deployments():
                 return
 
             for deployment in deployments:
+                # Only delete if older than threshold to avoid race conditions
+                if deployment.created is not None:
+                    age_seconds = (now - deployment.created).total_seconds()
+                    if age_seconds < CLEANUP_AGE_THRESHOLD_SECONDS:
+                        logger.debug(
+                            f"Skipping cleanup of {deployment.name} - only {age_seconds:.0f}s old"
+                        )
+                        continue
+
                 await client.delete_deployment(deployment.id)
                 logger.info(f"🧹 Pre-test sweeper deleted test deployment: {deployment.name}")
         except Exception as e:
@@ -167,15 +186,11 @@ async def create_test_deployment_context(
         )
         logger.info(f"Created test deployment: {deployment_name} with limit {concurrency_limit}")
 
-        try:
-            yield deployment_id
-        finally:
-            # Clean up the deployment
-            try:
-                await client.delete_deployment(deployment_id)
-                logger.info(f"🧹 Cleaned up test deployment: {deployment_id}")
-            except Exception as e:
-                logger.warning(f"Error cleaning up deployment {deployment_id}: {e}")
+        # Yield the deployment ID - cleanup is handled by sweep_up_lingering_test_deployments()
+        # which only deletes deployments older than CLEANUP_AGE_THRESHOLD_SECONDS.
+        # This prevents race conditions where the deployment is deleted while
+        # child flow run pods are still starting up.
+        yield deployment_id
 
 
 @flow
