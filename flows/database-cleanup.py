@@ -18,6 +18,7 @@ from typing import AsyncGenerator, Literal
 from prefect import flow, get_run_logger, task
 from prefect.blocks.system import Secret
 from prefect.client.orchestration import get_client
+from prefect.exceptions import ObjectNotFound
 from prefect.client.schemas.filters import (
     FlowRunFilter,
     FlowRunFilterStartTime,
@@ -169,9 +170,12 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
             async def delete_with_error_handling(flow_run_id):
                 try:
                     await client.delete_flow_run(flow_run_id)
-                    return flow_run_id, None
+                    return flow_run_id, None, False
+                except ObjectNotFound:
+                    # Already deleted (404) - treat as success (idempotent)
+                    return flow_run_id, None, True
                 except Exception as e:
-                    return flow_run_id, str(e)
+                    return flow_run_id, str(e), False
 
             results = await asyncio.gather(
                 *[delete_with_error_handling(fr.id) for fr in flow_runs],
@@ -179,16 +183,20 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
             )
 
             # Process results
-            for flow_run_id, error in results:
+            already_deleted_count = 0
+            for flow_run_id, error, was_already_deleted in results:
                 if error:
                     failed_deletes.append((flow_run_id, error))
                     failed_total += 1
                 else:
                     deleted_total += 1
+                    if was_already_deleted:
+                        already_deleted_count += 1
 
             batch_deleted = batch_size - len(failed_deletes)
+            already_msg = f" ({already_deleted_count} already gone)" if already_deleted_count else ""
             logger.info(
-                f"Batch complete: deleted {batch_deleted}/{batch_size} "
+                f"Batch complete: deleted {batch_deleted}/{batch_size}{already_msg} "
                 f"(total: {deleted_total}, failed: {failed_total})"
             )
 
