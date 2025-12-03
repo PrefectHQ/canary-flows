@@ -74,9 +74,9 @@ class RetentionConfig(BaseModel):
     )
 
     sql_batch_size: int = Field(
-        default=50000,
+        default=10000,
         ge=1000,
-        le=200000,
+        le=100000,
         description="Batch size for SQL deletions (events/event_resources)",
         json_schema_extra={"position": 4},
     )
@@ -115,9 +115,8 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
     logger = get_run_logger()
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=config.days_to_keep)
-    logger.info(f"Cleaning flow runs older than {cutoff} ({config.days_to_keep} days)")
-    logger.info(f"States to clean: {config.states_to_clean}")
-    logger.info(f"Dry run: {config.dry_run}")
+    logger.info(f"  cutoff: {cutoff.strftime('%Y-%m-%d %H:%M')} UTC")
+    logger.info(f"  states: {', '.join(config.states_to_clean)}")
 
     async with get_client() as client:
         # Create filter for old completed flow runs using state names
@@ -134,28 +133,20 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
         )
 
         if not flow_runs:
-            logger.info("No flow runs found matching criteria")
+            logger.info("  no flow runs found matching criteria")
             return {"deleted": 0, "failed": 0, "total_found": 0}
 
         # Get total count for preview
         total_count = len(flow_runs)
-        if len(flow_runs) == config.batch_size:
-            # There might be more, estimate
-            logger.info(f"Found at least {total_count} flow runs to clean (may be more)")
-        else:
-            logger.info(f"Found {total_count} flow runs to clean")
+        more = "+" if len(flow_runs) == config.batch_size else ""
+        logger.info(f"  found: {total_count}{more} flow runs to clean")
 
         if config.dry_run:
-            logger.info("DRY RUN MODE - No actual deletions will occur")
-            logger.info(f"Would delete up to {total_count} flow runs")
-            # Show sample of what would be deleted
-            for i, fr in enumerate(flow_runs[:5]):
-                logger.info(
-                    f"  Sample {i+1}: {fr.name} ({fr.id}) "
-                    f"from {fr.start_time}, state: {fr.state.name}"
-                )
+            logger.info("  [DRY RUN] would delete these flow runs:")
+            for fr in flow_runs[:5]:
+                logger.info(f"    {fr.name} ({fr.state.name})")
             if len(flow_runs) > 5:
-                logger.info(f"  ... and {len(flow_runs) - 5} more in this batch")
+                logger.info(f"    ... and {len(flow_runs) - 5} more")
             return {"deleted": 0, "failed": 0, "total_found": total_count, "dry_run": True}
 
         # Actual deletion logic - use concurrent deletes with gather
@@ -195,15 +186,12 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
 
             batch_deleted = batch_size - len(failed_deletes)
             already_msg = f" ({already_deleted_count} already gone)" if already_deleted_count else ""
-            logger.info(
-                f"Batch complete: deleted {batch_deleted}/{batch_size}{already_msg} "
-                f"(total: {deleted_total}, failed: {failed_total})"
-            )
+            logger.info(f"  batch: {batch_deleted}/{batch_size}{already_msg} | total: {deleted_total:,}")
 
             if failed_deletes:
-                logger.warning(f"Failed to delete {len(failed_deletes)} flow runs in this batch")
+                logger.warning(f"  {len(failed_deletes)} failures in batch:")
                 for flow_run_id, error in failed_deletes[:3]:
-                    logger.warning(f"  - {flow_run_id}: {error}")
+                    logger.warning(f"    {flow_run_id}: {error}")
 
             # Rate limiting delay between batches
             if config.rate_limit_delay > 0:
@@ -214,9 +202,7 @@ async def delete_old_flow_runs(config: RetentionConfig) -> dict[str, int]:
                 flow_run_filter=flow_run_filter, limit=config.batch_size
             )
 
-        logger.info(
-            f"Cleanup complete. Deleted: {deleted_total}, Failed: {failed_total}"
-        )
+        logger.info(f"  done: {deleted_total:,} deleted, {failed_total:,} failed")
         return {"deleted": deleted_total, "failed": failed_total, "total_found": total_count}
 
 
@@ -241,11 +227,8 @@ async def get_db_connection(
 
 async def get_connection_string(secret_block_name: str) -> str:
     """Load database connection string from a Secret block."""
-    logger = get_run_logger()
-
     try:
         secret = await Secret.load(secret_block_name)
-        logger.info(f"Loaded database connection from Secret block: {secret_block_name}")
         return secret.get()
     except Exception as e:
         raise ValueError(
@@ -266,9 +249,6 @@ async def delete_old_events(config: RetentionConfig) -> dict[str, int]:
     cutoff_days = config.days_to_keep
     batch_size = config.sql_batch_size
 
-    logger.info(f"Cleaning events older than {cutoff_days} days")
-    logger.info(f"Batch size: {batch_size}, Dry run: {config.dry_run}")
-
     connection_string = await get_connection_string(config.db_secret_block)
 
     async with get_db_connection(connection_string) as conn:
@@ -284,11 +264,10 @@ async def delete_old_events(config: RetentionConfig) -> dict[str, int]:
             """
         )
 
-        logger.info(f"Found {event_count:,} events older than {cutoff_days} days")
-        logger.info(f"Found {resource_count:,} associated event_resources")
+        logger.info(f"  found: {event_count:,} events, {resource_count:,} event_resources older than {cutoff_days} days")
 
         if config.dry_run:
-            logger.info("DRY RUN MODE - No actual deletions will occur")
+            logger.info("  [DRY RUN] no deletions performed")
             return {
                 "events_deleted": 0,
                 "event_resources_deleted": 0,
@@ -315,7 +294,7 @@ async def delete_old_events(config: RetentionConfig) -> dict[str, int]:
             )
             deleted = int(result.split()[-1]) if result else 0
             total_resources_deleted += deleted
-            logger.info(f"Batch {batch_num}: deleted {deleted} event_resources (total: {total_resources_deleted:,})")
+            logger.info(f"  event_resources batch {batch_num}: {deleted:,} deleted | total: {total_resources_deleted:,}")
 
             if deleted < batch_size:
                 break
@@ -340,7 +319,7 @@ async def delete_old_events(config: RetentionConfig) -> dict[str, int]:
             )
             deleted = int(result.split()[-1]) if result else 0
             total_events_deleted += deleted
-            logger.info(f"Batch {batch_num}: deleted {deleted} events (total: {total_events_deleted:,})")
+            logger.info(f"  events batch {batch_num}: {deleted:,} deleted | total: {total_events_deleted:,}")
 
             if deleted < batch_size:
                 break
@@ -348,10 +327,7 @@ async def delete_old_events(config: RetentionConfig) -> dict[str, int]:
             if config.rate_limit_delay > 0:
                 await asyncio.sleep(config.rate_limit_delay)
 
-        logger.info(
-            f"Events cleanup complete. Deleted {total_events_deleted:,} events "
-            f"and {total_resources_deleted:,} event_resources"
-        )
+        logger.info(f"  done: {total_events_deleted:,} events, {total_resources_deleted:,} event_resources")
         return {
             "events_deleted": total_events_deleted,
             "event_resources_deleted": total_resources_deleted,
@@ -372,9 +348,6 @@ async def delete_orphaned_event_resources(config: RetentionConfig) -> dict[str, 
     logger = get_run_logger()
     batch_size = config.sql_batch_size
 
-    logger.info("Cleaning orphaned event_resources (where parent event doesn't exist)")
-    logger.info(f"Batch size: {batch_size}, Dry run: {config.dry_run}")
-
     connection_string = await get_connection_string(config.db_secret_block)
 
     async with get_db_connection(connection_string) as conn:
@@ -386,24 +359,13 @@ async def delete_orphaned_event_resources(config: RetentionConfig) -> dict[str, 
             """
         )
 
-        logger.info(f"Found {orphan_count:,} orphaned event_resources")
+        logger.info(f"  found: {orphan_count:,} orphaned event_resources")
 
         if orphan_count == 0:
-            logger.info("No orphaned event_resources to clean up")
             return {"orphans_deleted": 0, "orphans_found": 0}
 
         if config.dry_run:
-            logger.info("DRY RUN MODE - No actual deletions will occur")
-            # Show sample of orphans
-            samples = await conn.fetch(
-                """
-                SELECT er.id, er.event_id FROM event_resources er
-                WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = er.event_id)
-                LIMIT 5
-                """
-            )
-            for sample in samples:
-                logger.info(f"  Sample orphan: resource_id={sample['id']}, missing_event_id={sample['event_id']}")
+            logger.info("  [DRY RUN] no deletions performed")
             return {"orphans_deleted": 0, "orphans_found": orphan_count, "dry_run": True}
 
         # Delete orphans in batches
@@ -423,7 +385,7 @@ async def delete_orphaned_event_resources(config: RetentionConfig) -> dict[str, 
             )
             deleted = int(result.split()[-1]) if result else 0
             total_deleted += deleted
-            logger.info(f"Batch {batch_num}: deleted {deleted} orphans (total: {total_deleted:,})")
+            logger.info(f"  batch {batch_num}: {deleted:,} deleted | total: {total_deleted:,}")
 
             if deleted < batch_size:
                 break
@@ -431,7 +393,7 @@ async def delete_orphaned_event_resources(config: RetentionConfig) -> dict[str, 
             if config.rate_limit_delay > 0:
                 await asyncio.sleep(config.rate_limit_delay)
 
-        logger.info(f"Orphan cleanup complete. Deleted {total_deleted:,} orphaned event_resources")
+        logger.info(f"  done: {total_deleted:,} orphans deleted")
         return {"orphans_deleted": total_deleted, "orphans_found": orphan_count}
 
 
@@ -458,9 +420,12 @@ async def get_table_stats(config: RetentionConfig) -> dict[str, int]:
             """
         )
 
-        logger.info(f"Current table stats:")
-        logger.info(f"  events: {events_count:,} total ({events_older_than_retention:,} older than {config.days_to_keep} days)")
-        logger.info(f"  event_resources: {event_resources_count:,} total ({orphan_count:,} orphaned)")
+        logger.info(
+            f"  events           {events_count:>12,}  ({events_older_than_retention:,} older than {config.days_to_keep} days)"
+        )
+        logger.info(
+            f"  event_resources  {event_resources_count:>12,}  ({orphan_count:,} orphaned)"
+        )
 
         return {
             "events_total": events_count,
@@ -468,6 +433,11 @@ async def get_table_stats(config: RetentionConfig) -> dict[str, int]:
             "event_resources_total": event_resources_count,
             "event_resources_orphaned": orphan_count,
         }
+
+
+def _section(title: str) -> str:
+    """Format a section header."""
+    return f"\n{'─' * 50}\n  {title}\n{'─' * 50}"
 
 
 @flow(name="database-cleanup")
@@ -487,9 +457,12 @@ async def database_cleanup_entry(config: RetentionConfig = RetentionConfig()) ->
         Statistics about the cleanup operation
     """
     logger = get_run_logger()
-    logger.info("Starting database cleanup")
-    logger.info(f"Configuration: days_to_keep={config.days_to_keep}, dry_run={config.dry_run}")
-    logger.info(f"Entity types: {[e.value for e in config.entity_types]}")
+
+    # Header
+    logger.info(_section("Database Cleanup"))
+    mode = "DRY RUN" if config.dry_run else "LIVE"
+    logger.info(f"  mode: {mode}  |  retention: {config.days_to_keep} days")
+    logger.info(f"  targets: {', '.join(e.value for e in config.entity_types)}")
 
     stats = {"total_deleted": 0, "total_failed": 0}
     is_all = EntityType.ALL in config.entity_types
@@ -497,14 +470,16 @@ async def database_cleanup_entry(config: RetentionConfig = RetentionConfig()) ->
     # Get table stats first for visibility
     needs_sql = is_all or EntityType.EVENTS in config.entity_types or EntityType.ORPHANED_EVENT_RESOURCES in config.entity_types
     if needs_sql:
+        logger.info(_section("Table Stats"))
         try:
             table_stats = await get_table_stats(config)
             stats["table_stats"] = table_stats
         except Exception as e:
-            logger.warning(f"Could not get table stats (DB connection may not be configured): {e}")
+            logger.warning(f"  Could not get table stats: {e}")
 
     # Clean up flow runs via API
     if EntityType.FLOW_RUNS in config.entity_types or is_all:
+        logger.info(_section("Flow Runs (via API)"))
         result = await delete_old_flow_runs(config)
         stats["flow_runs_deleted"] = result["deleted"]
         stats["flow_runs_failed"] = result["failed"]
@@ -516,6 +491,7 @@ async def database_cleanup_entry(config: RetentionConfig = RetentionConfig()) ->
 
     # Clean up events via direct SQL
     if EntityType.EVENTS in config.entity_types or is_all:
+        logger.info(_section("Events (via SQL)"))
         try:
             result = await delete_old_events(config)
             stats["events_deleted"] = result.get("events_deleted", 0)
@@ -525,11 +501,12 @@ async def database_cleanup_entry(config: RetentionConfig = RetentionConfig()) ->
             if "dry_run" in result:
                 stats["dry_run"] = True
         except Exception as e:
-            logger.error(f"Failed to clean up events: {e}")
+            logger.error(f"  Failed: {e}")
             stats["events_error"] = str(e)
 
     # Clean up orphaned event_resources via direct SQL
     if EntityType.ORPHANED_EVENT_RESOURCES in config.entity_types or is_all:
+        logger.info(_section("Orphaned Event Resources (via SQL)"))
         try:
             result = await delete_orphaned_event_resources(config)
             stats["orphans_deleted"] = result.get("orphans_deleted", 0)
@@ -538,10 +515,16 @@ async def database_cleanup_entry(config: RetentionConfig = RetentionConfig()) ->
             if "dry_run" in result:
                 stats["dry_run"] = True
         except Exception as e:
-            logger.error(f"Failed to clean up orphaned event_resources: {e}")
+            logger.error(f"  Failed: {e}")
             stats["orphans_error"] = str(e)
 
-    logger.info(f"Database cleanup finished: {stats}")
+    # Summary
+    logger.info(_section("Summary"))
+    logger.info(f"  total deleted: {stats['total_deleted']:,}")
+    if stats["total_failed"] > 0:
+        logger.info(f"  total failed:  {stats['total_failed']:,}")
+    logger.info("")
+
     return stats
 
 
