@@ -219,21 +219,33 @@ deployments:
       - maintenance
       - expected:success
     description: |
-      Cleans up old flow runs from the testbed database to manage disk space.
+      Cleans up old data from the testbed database to manage disk space.
+
+      Supports cleaning:
+      - flow_runs: via Prefect API (safe, with cascade)
+      - events: via direct SQL (for when built-in trimmer can't keep up)
+      - orphaned_event_resources: via direct SQL (resources whose parent event was deleted)
 
       By default runs in DRY RUN mode - no actual deletions occur unless
       explicitly configured via parameters when triggering the flow.
 
+      For SQL cleanup (events/orphans), requires a Secret block with the
+      database connection string (configured via db_secret_block parameter).
+
       Configurable via UI form with validation:
       - Retention period (1-365 days, default: 30)
-      - Entity types to clean (flow_runs)
-      - Terminal states to include (COMPLETED, FAILED, CANCELLED, CRASHED)
-      - Batch size (10-1000, default: 100)
-      - Rate limiting delay (0-10s, default: 0.5s)
+      - Entity types: flow_runs, events, orphaned_event_resources, all
+      - Terminal states to include (for flow runs)
+      - Batch sizes for API and SQL operations
+      - Rate limiting delay
       - Dry run mode (default: true)
     schedule: *every_three_hours
     entrypoint: flows/database-cleanup.py:database_cleanup_entry
     work_pool: *integration-tests-work-pool
     parameters:
       config:
-        days_to_keep: 60
+        days_to_keep: 7
+        entity_types:
+          - flow_runs
+          - orphaned_event_resources
+        dry_run: false
