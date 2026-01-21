@@ -222,6 +222,10 @@ deployments:
       See: https://github.com/PrefectHQ/prefect/pull/20300
     schedule: *every_five_minutes
     entrypoint: flows/prefect-dbt-integration.py:prefect_dbt_integration_entry
+    pull:
+      - prefect.deployments.steps.git_clone:
+          repository: https://github.com/PrefectHQ/canary-flows
+          branch: add-prefect-dbt-canary  # TODO: change to main after PR merge
     work_pool:
       <<: *integration-tests-work-pool
       job_variables:
