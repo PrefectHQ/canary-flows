@@ -225,7 +225,7 @@ deployments:
     pull:
       - prefect.deployments.steps.git_clone:
           repository: https://github.com/PrefectHQ/canary-flows
-          branch: add-prefect-dbt-canary  # TODO: change to main after PR merge
+          branch: main
     work_pool:
       <<: *integration-tests-work-pool
       job_variables:
