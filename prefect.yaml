@@ -12,6 +12,9 @@ definitions:
     every_five_minutes: &every_five_minutes
       cron: "*/5 * * * *"
 
+    every_one_hour: &every_one_hour
+      cron: "0 * * * *"
+
     every_three_hours: &every_three_hours
       cron: "0 */3 * * *"
 
@@ -266,3 +269,11 @@ deployments:
           - flow_runs
           - orphaned_event_resources
         dry_run: false
+
+  - name: Zombie Flow Detection
+    tags:
+      - expected:success
+    description: *description
+    schedule: *every_one_hour
+    entrypoint: flows/zombie-flow-detection.py:assess_zombie_flow_detection
+    work_pool: *integration-tests-work-pool
