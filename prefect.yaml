@@ -214,6 +214,19 @@ deployments:
     entrypoint: flows/task-retries.py:task_retries_entry
     work_pool: *integration-tests-work-pool
 
+  - name: prefect-dbt Integration
+    tags:
+      - expected:success
+    description: |
+      Tests prefect-dbt CLI tasks to catch regressions from async dispatch changes.
+      See: https://github.com/PrefectHQ/prefect/pull/20300
+    schedule: *every_five_minutes
+    entrypoint: flows/prefect-dbt-integration.py:prefect_dbt_integration_entry
+    work_pool:
+      <<: *integration-tests-work-pool
+      job_variables:
+        command: uv run --with "prefect-dbt @ git+https://github.com/PrefectHQ/prefect.git#subdirectory=src/integrations/prefect-dbt" --with dbt-duckdb -m prefect.engine
+
   - name: Database Cleanup
     tags:
       - maintenance

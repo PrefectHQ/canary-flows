@@ -1,0 +1,9 @@
+name: canary_dbt
+version: "1.0.0"
+
+profile: canary
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+target-path: "target"
+clean-targets: ["target"]
