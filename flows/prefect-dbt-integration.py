@@ -5,6 +5,7 @@ exercises the dbt CLI tasks to catch regressions from async dispatch changes.
 see: https://github.com/PrefectHQ/prefect/pull/20300
 """
 
+from importlib.metadata import version
 from pathlib import Path
 
 from prefect import flow, get_run_logger
@@ -34,6 +35,7 @@ def prefect_dbt_integration_entry():
     project_dir = str(DBT_PROJECT_DIR)
     profiles_dir = str(DBT_PROFILES_DIR)
 
+    logger.info(f"prefect-dbt version: {version('prefect-dbt')}")
     logger.info(f"dbt project: {project_dir}")
     logger.info(f"dbt profiles: {profiles_dir}")
 
